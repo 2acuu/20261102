@@ -1,7 +1,7 @@
 /* ====================================================================
  *  水域安全小達人 —— 潛水探險多媒體互動測驗（p5.js + p5.sound）
  *  對象：國小五、六年級
- *  （已整合：五題全對自動開啟海底寶箱慶祝特效）
+ *  （已整合：6 題全對自動開啟海底寶箱慶祝特效）
  * ==================================================================== */
 
 // ====================================================================
@@ -33,9 +33,9 @@ const CONFIG = {
   lives: 5,
   hints: 2,
   timerEnabled: true,
-  timerSeconds: { single: 25, tf: 15, hazard: 40, order: 35, sound: 30 },
+  timerSeconds: { single: 25, tf: 15, hazard: 40, order: 35, sound: 30, slider: 45 },
 
-  pointsCorrect: 20,        // 5 題滿分 100 分
+  pointsCorrect: 16.66,     // 6 題滿分約 100 分
   timeBonusMax: 0,
   comboBonus: 0,
   hazardMaxMiss: 2,
@@ -56,10 +56,10 @@ const CONFIG = {
   }
 };
 
-const TYPE_NAMES = { single: '單選題', tf: '是非題', hazard: '找危險', order: '點選排序', sound: '聽音辨識' };
+const TYPE_NAMES = { single: '單選題', tf: '是非題', hazard: '找危險', order: '點選排序', sound: '聽音辨識', slider: '水溫與深度' };
 
 // ====================================================================
-// 二、題庫區 QUESTIONS (共 5 題)
+// 二、題庫區 QUESTIONS (共 6 題)
 // ====================================================================
 const QUESTIONS = [
   {
@@ -127,6 +127,16 @@ const QUESTIONS = [
     hint: '救生員吹哨子，是要大家「注意」！',
     scene: 'sound_whistle',
     sfx: 'whistle'
+  },
+  {
+    type: 'slider',
+    stem: '【動態預測】操作下方滑桿調整「溪流試水溫與深度指標」，找出安全的水深（0.3m ~ 1.2m）與舒適水溫（20°C ~ 28°C）區間！',
+    targetSliderMin: 0.15,
+    targetSliderMax: 0.40,
+    explain: '溪流水深如果超過 1.2 公尺（大人的胸口以上）或水溫太低（低於 20°C 容易抽筋）、太高都不安全！將滑桿調整到水深適中且水溫舒適的區間（大約在 30% ~ 40% 位置）即可過關。',
+    hint: '左右滑動滑桿，觀察畫面的水位線高度與溫度計，當外框出現「綠色安全光暈」就代表找到安全區間囉！',
+    scene: 'creek',
+    sfx: 'water'
   }
 ];
 
@@ -148,14 +158,15 @@ let coach = { text: '', mood: 'happy', until: 0 };
 let usingTouch = false, lastPressTime = 0, lastTouchTime = 0;
 let fitCache = {};
 let resultPage = 0;
-let treasureChestOpened = false;
 
-// 寶箱慶祝演出狀態
-let chest = null;                              // show / closing / docked
-let chestFx = { confetti: [], loot: [] };      // 彩帶、寶藏
+let chest = null;
+let chestFx = { confetti: [], loot: [] };
 let lastCoinPing = 0;
 
 let audioReady = false, oscVoices = [], voiceIdx = 0, noiseVoice = null, ttsVoice = null;
+let sliderVal = 0.5;
+let sliderDragging = false;
+let lastSliderToneTime = 0;
 
 // ====================================================================
 // 四、音效區
@@ -217,6 +228,7 @@ const SFX = {
   fanfare: function () { [523, 659, 784, 659, 784, 1047].forEach(function (f, i) { tone(f, 0.2, 'triangle', 0.4, null, i * 0.12); }); },
   splash: function () { noiseBurst(0.5, 0.4, 0.02); tone(500, 0.2, 'sine', 0.15, 250); },
   water: function () { noiseBurst(1.6, 0.45, 0.4); },
+  sliderMove: function (freq) { tone(freq, 0.12, 'sine', 0.15); },
   whistle: function () {
     for (let b = 0; b < 2; b++) {
       for (let i = 0; i < 7; i++) tone(i % 2 ? 2900 : 2600, 0.09, 'sine', 0.35, null, b * 1.0 + i * 0.1);
@@ -228,7 +240,6 @@ const SFX = {
     tone(70, 1.8, 'sine', 0.6, 35);
   },
 
-  // ---- 寶箱慶祝音效 ----
   chestWhoosh: function () { tone(1200, 0.8, 'sine', 0.12, 200); },
   chestThud: function () { tone(110, 0.35, 'sine', 0.7, 45); noiseBurst(0.25, 0.4, 0.005); },
   chestRumble: function () { tone(70, 1.0, 'sawtooth', 0.25, 160); noiseBurst(1.0, 0.22, 0.5); },
@@ -256,9 +267,9 @@ const SFX = {
   }
 };
 
-function playSfx(name) {
+function playSfx(name, param) {
   if (muted || !audioReady) return;
-  if (SFX[name]) SFX[name]();
+  if (SFX[name]) SFX[name](param);
 }
 
 function toggleMute() {
@@ -653,7 +664,10 @@ function drawScene(q, r, t) {
   switch (q.scene) {
     case 'pool': bgPool(w, h, t); break;
     case 'beach': bgBeach(w, h, t); break;
-    case 'creek': bgCreek(w, h, t); break;
+    case 'creek': 
+      if (q.type === 'slider') sceneSliderInteractive(w, h, u, t, q);
+      else bgCreek(w, h, t); 
+      break;
     case 'warmup': sceneWarmup(w, h, u, t); break;
     case 'lifejacket': sceneLifejacket(w, h, u, t); break;
     case 'rip': sceneRip(w, h, u, t); break;
@@ -663,14 +677,29 @@ function drawScene(q, r, t) {
       sceneSound(q.scene, w, h, u, t); break;
     default: bgPool(w, h, t);
   }
-  if (q.items) {
+  if (q.items && q.type !== 'slider') {
     for (let i = 0; i < q.items.length; i++) {
       const it = q.items[i];
       drawItem(it.kind, it.x * w, it.y * h, it.size * u, t);
     }
   }
   ctx.restore();
-  noFill(); stroke(255, 255, 255, 110); strokeWeight(2);
+  
+  let isSafeGlow = false;
+  if (q.type === 'slider') {
+    if (sliderVal >= q.targetSliderMin && sliderVal <= q.targetSliderMax) {
+      isSafeGlow = true;
+    }
+  }
+
+  noFill(); 
+  if (isSafeGlow) {
+    stroke(CONFIG.colors.good[0], CONFIG.colors.good[1], CONFIG.colors.good[2], 200 + 55 * sin(t * 8));
+    strokeWeight(6);
+  } else {
+    stroke(255, 255, 255, 110); 
+    strokeWeight(2);
+  }
   rect(0, 0, w, h, rad);
   pop();
 }
@@ -723,6 +752,38 @@ function bgCreek(w, h, t) {
   noStroke(); fill(70, 135, 70); rect(0, h * 0.78, w, h * 0.22);
   fill(100, 110, 110);
   ellipse(w * 0.08, h * 0.86, w * 0.16, h * 0.11); ellipse(w * 0.82, h * 0.9, w * 0.2, h * 0.13);
+}
+
+function sceneSliderInteractive(w, h, u, t, q) {
+  noStroke();
+  fill(110, 150, 175); rect(0, 0, w, h * 0.35);
+  fill(50, 110, 90);
+  beginShape(); vertex(0, h * 0.35); vertex(0, h * 0.2); vertex(w * 0.3, h * 0.08); vertex(w * 0.6, h * 0.22); vertex(w, h * 0.15); vertex(w, h * 0.35); endShape(CLOSE);
+
+  // 同步計算水深與水溫（sliderVal 0.0 ~ 1.0 對應水深 0.0 ~ 2.5m, 水溫 15°C ~ 32°C）
+  const curDepth = sliderVal * 2.5;
+  const curTemp = 15 + sliderVal * 17; 
+  const waterHeight = (h * 0.35) + sliderVal * (h * 0.45);
+
+  fill(30, 130, 180, 210); rect(0, h * 0.8 - waterHeight * 0.5, w, waterHeight);
+  waveFill(w, h, h * 0.8 - waterHeight * 0.5, 4, 30, 2.0, t, [70, 200, 235, 180]);
+
+  const stickY = h * 0.55;
+  drawStick(w * 0.25, stickY, u * 0.45, [0.2, -0.2], [0.1, -0.1], { shirt: [255, 140, 60] });
+
+  push();
+  noStroke(); fill(0, 0, 0, 160);
+  rect(w * 0.42, h * 0.08, w * 0.54, h * 0.26, 10);
+
+  textAlign(LEFT, CENTER); textFont(CONFIG.font); textStyle(BOLD); textSize(fz(17));
+  fill(255);
+  text('即時水深：' + curDepth.toFixed(1) + ' 公尺', w * 0.45, h * 0.13);
+  text('即時水溫：' + curTemp.toFixed(1) + ' °C', w * 0.45, h * 0.21);
+
+  const isSafe = (sliderVal >= q.targetSliderMin && sliderVal <= q.targetSliderMax);
+  fill(isSafe ? CONFIG.colors.good : CONFIG.colors.bad);
+  text(isSafe ? '★ 目前在安全區間！' : '⚠ 請調整至安全水深與水溫', w * 0.45, h * 0.28);
+  pop();
 }
 
 function sceneWarmup(w, h, u, t) {
@@ -909,68 +970,6 @@ function drawItem(kind, x, y, s, t) {
       }
       break;
     }
-    case 'redflag': {
-      stroke(240, 240, 240); strokeWeight(s * 0.045); line(x - s * 0.2, y + s * 0.5, x - s * 0.2, y - s * 0.5);
-      noStroke(); fill(230, 40, 40);
-      beginShape();
-      for (let i = 0; i <= 8; i++) vertex(x - s * 0.2 + i * s * 0.06, y - s * 0.5 + sin(t * 5 - i * 0.7) * s * 0.035 * (i / 8));
-      for (let i = 8; i >= 0; i--) vertex(x - s * 0.2 + i * s * 0.06, y - s * 0.2 + sin(t * 5 - i * 0.7) * s * 0.035 * (i / 8));
-      endShape(CLOSE);
-      fill(225, 200, 140); ellipse(x - s * 0.2, y + s * 0.5, s * 0.5, s * 0.12);
-      break;
-    }
-    case 'farswimmer': {
-      const yy = y + sin(t * 2) * s * 0.05;
-      noFill(); stroke(255, 255, 255, 140); strokeWeight(2);
-      ellipse(x, yy + s * 0.1, s * 0.5 + sin(t * 3) * 4, s * 0.12);
-      noStroke(); fill(255, 214, 170); circle(x, yy, s * 0.2);
-      fill(255, 120, 20); arc(x, yy, s * 0.21, s * 0.21, PI, TWO_PI);
-      stroke(255, 214, 170); strokeWeight(s * 0.045); line(x, yy, x + s * 0.12, yy - s * 0.25 + sin(t * 9) * s * 0.06);
-      break;
-    }
-    case 'umbrella': {
-      stroke(110, 80, 60); strokeWeight(s * 0.04); line(x, y - s * 0.1, x, y + s * 0.5);
-      noStroke(); fill(240, 70, 70); arc(x, y, s * 0.9, s * 0.6, PI, TWO_PI);
-      fill(255); arc(x, y, s * 0.3, s * 0.6, PI, TWO_PI);
-      break;
-    }
-    case 'slipperyrock': {
-      noStroke(); fill(110, 120, 115); ellipse(x, y + s * 0.3, s * 0.95, s * 0.5);
-      fill(70, 140, 80, 220); ellipse(x - s * 0.2, y + s * 0.2, s * 0.32, s * 0.12); ellipse(x + s * 0.15, y + s * 0.32, s * 0.26, s * 0.1);
-      const wob = sin(t * 5) * 0.25;
-      push(); translate(x, y + s * 0.1); rotate(wob * 0.4);
-      drawStick(0, -s * 0.33, s * 0.8, [1.3 + wob, -1.3 - wob], [0.25, -0.25], { shirt: [160, 90, 220] }); pop();
-      fill(255, 255, 255, 190);
-      for (let k = 0; k < 4; k++) circle(x - s * 0.4 + k * s * 0.27, y + s * 0.5 + sin(t * 6 + k) * 3, s * 0.06);
-      break;
-    }
-    case 'stormcloud': {
-      noStroke(); fill(60, 66, 84);
-      circle(x - s * 0.25, y, s * 0.45); circle(x, y - s * 0.12, s * 0.6); circle(x + s * 0.28, y, s * 0.45);
-      rect(x - s * 0.45, y - s * 0.02, s * 0.9, s * 0.22, 14);
-      stroke(150, 200, 255, 200); strokeWeight(2);
-      for (let k = 0; k < 6; k++) {
-        const rx = x - s * 0.4 + k * s * 0.16, ry = y + s * 0.25 + ((t * s * 0.9 + k * 13) % (s * 0.35));
-        line(rx, ry, rx - 3, ry + s * 0.09);
-      }
-      if (sin(t * 3) > 0.7) {
-        noStroke(); fill(255, 230, 80);
-        beginShape(); vertex(x, y + s * 0.2); vertex(x + s * 0.1, y + s * 0.2); vertex(x + s * 0.03, y + s * 0.38);
-        vertex(x + s * 0.12, y + s * 0.38); vertex(x - s * 0.05, y + s * 0.62); vertex(x, y + s * 0.44); vertex(x - s * 0.08, y + s * 0.44);
-        endShape(CLOSE);
-      }
-      break;
-    }
-    case 'tree': {
-      noStroke(); fill(110, 75, 45); rect(x - s * 0.06, y, s * 0.5);
-      fill(50, 130, 60); circle(x, y - s * 0.1, s * 0.5); circle(x - s * 0.2, y + s * 0.05, s * 0.36); circle(x + s * 0.2, y + s * 0.05, s * 0.36);
-      break;
-    }
-    case 'hiker': {
-      drawStick(x, y, s * 0.85, [0.4, -0.4], [0.15, -0.15], { shirt: [255, 120, 0], cap: [50, 40, 30] });
-      noStroke(); fill(255, 255, 255, 230); rect(x - s * 0.1, y - s * 0.12, s * 0.2, s * 0.05, 2);
-      break;
-    }
     default: break;
   }
   pop();
@@ -985,14 +984,14 @@ function itemHot(it, r) {
 // 寶箱慶祝模組（滿分自動觸發）
 // ====================================================================
 const CHEST = {
-  dropEnd: 0.85,   // 落地時間
-  rumble: 1.0,     // 隆隆聲
-  lock: 1.6,       // 鎖頭聲
-  open: 2.0,       // 蓋子開始打開
-  burst: 2.15,     // 噴灑爆發
-  cannon: 2.35,    // 兩側彩帶砲
-  cheer: 2.7,      // 海豚恭喜
-  btn: 4.2,        // 出現「收下寶藏」
+  dropEnd: 0.85,
+  rumble: 1.0,
+  lock: 1.6,
+  open: 2.0,
+  burst: 2.15,
+  cannon: 2.35,
+  cheer: 2.7,
+  btn: 4.2,
   fountainEnd: 3.8, rainEnd: 6.0
 };
 const CONFETTI_COLS = [[255, 90, 120], [255, 214, 64], [80, 230, 150], [90, 190, 255], [190, 120, 255], [255, 150, 60], [255, 255, 255]];
@@ -1008,7 +1007,7 @@ function easeOutBounce(x) {
   x -= 2.625 / d; return n * x * x + 0.984375;
 }
 
-function isPerfect() { return !!G && G.lives > 0 && G.score >= 100 && G.correctCount === G.pool.length && G.pool.length >= QUESTIONS.length; }
+function isPerfect() { return !!G && G.lives > 0 && G.score >= 99 && G.correctCount === G.pool.length && G.pool.length >= QUESTIONS.length; }
 function startChestShow(delaySec) {
   chest = { t0: millis() + (delaySec || 0) * 1000, state: 'show', f: {}, t1: 0 };
   chestFx.confetti = []; chestFx.loot = [];
@@ -1022,7 +1021,6 @@ function chestGeo() {
   return { k: constrain(min(W / 260, H / 400), 0.8, 2.2), cx: W / 2, cy: H * 0.46, floorY: H * 0.9 };
 }
 
-// ---------- 粒子工廠 ----------
 function mkConfetti(x, y, vx, vy) {
   const r = random();
   return {
@@ -1052,7 +1050,7 @@ function chestSpray(x, y, geo, nC, nL) {
   }
   for (let i = 0; i < nL; i++) chestFx.loot.push(chestLootShot(x, y, geo));
 }
-function chestCannon(side) {   // side: -1 左下、1 右下
+function chestCannon(side) {
   const W = UI.W, H = UI.H, base = sqrt(2 * 0.2 * H * 0.85);
   for (let i = 0; i < 80; i++) {
     const a = random(PI * 0.28, PI * 0.47), sp = base * random(0.7, 1.2);
@@ -1069,7 +1067,7 @@ function chestDust(x, y, k) {
 function updateConfetti(c, dt) {
   c.vx *= pow(0.975, dt);
   c.vy += (c.kind === 'dust' ? 0.03 : 0.2) * dt;
-  if (c.vy > 0 && c.kind !== 'dust') c.vy *= pow(0.94, dt);   // 空氣阻力：輕飄飄落下
+  if (c.vy > 0 && c.kind !== 'dust') c.vy *= pow(0.94, dt);
   c.sw += 0.07 * dt;
   c.x += (c.vx + (c.kind === 'dust' ? 0 : sin(c.sw) * 0.9)) * dt;
   c.y += c.vy * dt; c.rot += c.vr * dt; c.fl += c.vf * dt; c.a -= c.da * dt;
@@ -1135,7 +1133,6 @@ function drawLoot(l, t) {
   pop();
 }
 
-// ---------- 寶箱本體（e：0 關 → 1 全開） ----------
 function drawTreasureChest(cx, cy, k, e, t, o) {
   o = o || {};
   const W0 = 116, BH = 64, D = 60, HY = -21;
@@ -1144,9 +1141,8 @@ function drawTreasureChest(cx, cy, k, e, t, o) {
   push();
   translate(cx, cy); rotate(o.rot || 0); scale(k);
   noStroke();
-  fill(0, 0, 0, 70); ellipse(0, BH + 3, W0 * 1.3, 16);                 // 地面陰影
+  fill(0, 0, 0, 70); ellipse(0, BH + 3, W0 * 1.3, 16);
 
-  // 箱身
   fill(118, 62, 26); rect(-W0 / 2, 0, W0, BH, 5, 5, 8, 8);
   stroke(80, 40, 16, 140); strokeWeight(1.5);
   for (let i = 1; i < 4; i++) line(-W0 / 2 + i * W0 / 4, 4, -W0 / 2 + i * W0 / 4, BH - 4);
@@ -1159,13 +1155,11 @@ function drawTreasureChest(cx, cy, k, e, t, o) {
   [[-W0 / 2 + 7, 10], [W0 / 2 - 7, 10], [-W0 / 2 + 7, 32], [W0 / 2 - 7, 32], [-W0 / 2 + 7, BH - 20], [W0 / 2 - 7, BH - 20]]
     .forEach(function (p) { fill(150, 95, 15); circle(p[0], p[1], 6); fill(255, 240, 170); circle(p[0] - 0.7, p[1] - 0.7, 3); });
 
-  // 內部（打開時看得到）
   if (open) {
     fill(35, 16, 8); quad(-W0 / 2 + 5, HY + 2, W0 / 2 - 5, HY + 2, W0 / 2 - 4, 0, -W0 / 2 + 4, 0);
     fill(255, 200, 60, 160 * constrain(e, 0, 1)); ellipse(0, HY / 2 + 1, W0 - 26, 12);
   }
 
-  // 蓋子：以後方鉸鏈為軸旋轉（俯視投影）
   const fy = HY + 0.35 * D * cos(th) - 0.9 * D * sin(th);
   const inner = th > 1.45;
   const top = min(HY, fy), hh = abs(fy - HY);
@@ -1179,11 +1173,11 @@ function drawTreasureChest(cx, cy, k, e, t, o) {
     noStroke();
     fill(255, 205, 60); rect(-W0 / 2, top, 14, hh); rect(W0 / 2 - 14, top, 14, hh);
     fill(255, 255, 255, 28); rect(-W0 / 2 + 16, top + 2, W0 - 32, 4, 2);
-    const cs = max(0, cos(th)), sk = 17 * cs;                         // 蓋子正面裙邊
+    const cs = max(0, cos(th)), sk = 17 * cs;
     fill(138, 72, 30); rect(-W0 / 2, fy, W0, sk, 0, 0, 4, 4);
     fill(255, 205, 60); rect(-W0 / 2, fy, 14, sk); rect(W0 / 2 - 14, fy, 14, sk);
     rect(-W0 / 2, fy + sk - 6 * max(0.2, cs), W0, 6 * max(0.2, cs));
-    if (!open && o.seam > 0) {                                        // 縫隙透出金光
+    if (!open && o.seam > 0) {
       for (let j = 0; j < 3; j++) {
         stroke(255, 225, 110, 70 * o.seam * (3 - j) / 3 * 1.6); strokeWeight(2 + j * 4);
         line(-W0 / 2 + 8, 17, W0 / 2 - 8, 17);
@@ -1196,12 +1190,10 @@ function drawTreasureChest(cx, cy, k, e, t, o) {
     noStroke();
   }
 
-  // 鎖頭
   fill(255, 205, 60); rect(-10, 4, 20, 24, 4);
   fill(255, 240, 170, 170); rect(-8, 6, 5, 10, 2);
   fill(90, 55, 10); circle(0, 14, 7); rect(-1.8, 14, 3.6, 8, 1);
 
-  // 滿出來的寶藏堆
   if (open) {
     const pe = constrain(e * 1.25, 0, 1);
     fill(235, 170, 25); arc(0, -2, W0 - 16, 62 * pe, PI, TWO_PI);
@@ -1245,7 +1237,6 @@ function drawChestGlow(x, y, t, a) {
   pop();
 }
 
-// ---------- 最上層主流程：在 draw() 最後呼叫 ----------
 function drawChestLayer(t) {
   if (gameState !== 'RESULT' || !chest || !G || !G.result) return;
   const W = UI.W, H = UI.H, m = UI.m, ctx = drawingContext;
@@ -1253,7 +1244,6 @@ function drawChestLayer(t) {
   const kM = max(0.42, 0.5 * UI.s), dockX = m + 62 * kM + 4, dockY = 12 + 58 * kM;
   const dt = min(deltaTime, 50) / 16.667;
 
-  // 收納後：左上角小寶箱，可點擊重看
   if (chest.state === 'docked') {
     const bx = dockX - 62 * kM, by = dockY - 60 * kM, bw = 124 * kM, bh = 140 * kM;
     const hv = isHover(bx, by, bw, bh); if (hv) hoverAny = true;
@@ -1276,7 +1266,6 @@ function drawChestLayer(t) {
   }
   const fade = 1 - constrain(closeP * 1.5, 0, 1), mv = easeInOut(closeP);
 
-  // 寶箱姿態
   let ox = geo.cx, oy = geo.cy, kk = k, e = 0, rot = 0, seam = 0;
   if (chest.state === 'closing') {
     ox = lerp(geo.cx, dockX, mv); oy = lerp(geo.cy, dockY, mv); kk = lerp(k, kM, mv); e = 1;
@@ -1291,7 +1280,6 @@ function drawChestLayer(t) {
   }
   const openX = ox, openY = oy - 10 * kk;
 
-  // 事件時間軸（音效、特效、語音）
   if (chest.state === 'show') {
     const fire = function (name, at, fn) { if (el >= at && !chest.f[name]) { chest.f[name] = true; fn(); } };
     fire('start', 0, function () { playSfx('chestWhoosh'); });
@@ -1305,36 +1293,34 @@ function drawChestLayer(t) {
     fire('cheer', CHEST.cheer, function () {
       playSfx('grandFanfare');
       setCoach('恭喜你全對！你是水域安全小達人！', 'cheer', 99999);
-      speak('哇！恭喜你五題全對，打開了海底寶箱！你就是水域安全小達人！');
+      speak('哇！恭喜你全部答對，打開了海底寶箱！你就是水域安全小達人！');
     });
     fire('shower2', 3.5, function () { playSfx('coinShower'); });
 
-    if (el > CHEST.burst && el < CHEST.fountainEnd) {             // 持續噴泉
+    if (el > CHEST.burst && el < CHEST.fountainEnd) {
       const n = el < 3.1 ? 0.6 : 0.25;
       for (let i = 0, c = floor(n + random()); i < c; i++) chestFx.loot.push(chestLootShot(openX, openY, geo));
       if (random() < 0.5) chestSpray(openX, openY, geo, 2, 0);
     }
-    if (el > CHEST.cannon && el < CHEST.rainEnd) {                // 彩帶雨
+    if (el > CHEST.cannon && el < CHEST.rainEnd) {
       const c = floor((el < 4.5 ? 1.2 : 0.4) + random());
       for (let i = 0; i < c; i++) chestFx.confetti.push(mkConfetti(random(W), -20, random(-1.5, 1.5), random(0.5, 2.5)));
     }
-    if (el > 1.2 && el < CHEST.open && random() < 0.45) {         // 縫隙火花
+    if (el > 1.2 && el < CHEST.open && random() < 0.45) {
       const c = mkConfetti(openX + random(-50, 50) * kk, oy + 17 * kk, random(-0.5, 0.5), -random(1, 3));
       c.kind = 'dot'; c.col = [255, 225, 110]; c.w = random(3, 7); c.da = 0.025; chestFx.confetti.push(c);
     }
   }
 
-  // ===== 繪製（全部在最上層）=====
   push();
   noStroke();
   ctx.globalAlpha = fade;
-  fill(0, 8, 24, 175 * constrain(el / 0.4, 0, 1)); rect(0, 0, W, H);          // 變暗背景
-  if (e > 0.02) drawChestGlow(openX, openY, t, constrain(e, 0, 1));            // 金光與光芒
+  fill(0, 8, 24, 175 * constrain(el / 0.4, 0, 1)); rect(0, 0, W, H);
+  if (e > 0.02) drawChestGlow(openX, openY, t, constrain(e, 0, 1));
 
   ctx.globalAlpha = 1;
-  drawTreasureChest(ox, oy, kk, e, t, { rot: rot, seam: seam });               // 寶箱
+  drawTreasureChest(ox, oy, kk, e, t, { rot: rot, seam: seam });
 
-  // 海豚教練與對話框
   ctx.globalAlpha = fade;
   if (el >= CHEST.cheer - 0.25) {
     const kd = min(W * 0.38, H * 0.26) / 155;
@@ -1349,7 +1335,6 @@ function drawChestLayer(t) {
     drawFitted('恭喜你全部答對！\n你就是水域安全小達人！', bx + 10, by + 4, bw - 20, bh - 8, fz(26), 12, CENTER, CONFIG.colors.dark);
   }
 
-  // 標題
   ctx.globalAlpha = fade * constrain((el - 0.3) / 0.4, 0, 1);
   const early = el < CHEST.open;
   const sc = early ? 1 : 0.6 + 0.4 * easeOutBack((el - CHEST.open) / 0.5);
@@ -1359,9 +1344,8 @@ function drawChestLayer(t) {
   fill(CONFIG.colors.accent); text(early ? '發現海底寶箱！' : '寶箱打開了！', 0, 0);
   pop();
   fill(CONFIG.colors.text); textSize(fz(28));
-  text(early ? '全部答對，寶箱要自動打開了…' : '五題全對，滿分 100 分！', W / 2, H * 0.11 + fz(52) * 0.85);
+  text(early ? '全部答對，寶箱要自動打開了…' : '六題全對，滿分 100 分！', W / 2, H * 0.11 + fz(52) * 0.85);
 
-  // 寶藏與彩帶（噴灑在寶箱前方）
   ctx.globalAlpha = fade;
   const loot = chestFx.loot;
   if (loot.length > 150) loot.splice(0, loot.length - 150);
@@ -1374,7 +1358,6 @@ function drawChestLayer(t) {
     drawConfetti(c);
   }
 
-  // 爆發震波與閃光
   if (chest.state === 'show' && el >= CHEST.burst) {
     ctx.globalAlpha = 1; noFill(); strokeWeight(6 * UI.s);
     for (let j = 0; j < 2; j++) {
@@ -1386,7 +1369,6 @@ function drawChestLayer(t) {
   }
   pop();
 
-  // 「收下寶藏」按鈕
   if (chest.state === 'show' && el >= CHEST.btn) {
     const bh = max(48, 58 * UI.s), bw = min(W - 2 * m, 360 * UI.s + 60);
     addButton('收下寶藏', (W - bw) / 2, H - bh - m * 1.5, bw, bh, function () { dismissChest(); },
@@ -1408,9 +1390,9 @@ function draw() {
   if (gameState === 'START') drawStart(t);
   else if (gameState === 'HELP') drawHelp(t);
   else if (gameState === 'PLAY') drawPlay(t);
-  else if (gameState === 'RESULT') { uiLocked = chestBusy(); drawResult(t); uiLocked = false; }  // 演出時鎖住底下按鈕
+  else if (gameState === 'RESULT') { uiLocked = chestBusy(); drawResult(t); uiLocked = false; }
   drawFX();
-  drawChestLayer(t);      // ★ 寶箱慶祝永遠在最上層
+  drawChestLayer(t);
   pop();
   cursor(hoverAny ? HAND : ARROW);
 }
@@ -1433,7 +1415,7 @@ function drawStart(t) {
   text('水域安全小達人', W / 2, H * 0.12);
 
   fill(CONFIG.colors.text); textSize(fz(CONFIG.fonts.subtitle));
-  text('潛水探險・5 大題型全能挑戰', W / 2, H * 0.12 + fz(CONFIG.fonts.title) * 0.85);
+  text('潛水探險・6 大題型全能挑戰', W / 2, H * 0.12 + fz(CONFIG.fonts.title) * 0.85);
 
   drawDolphin(W / 2, H * 0.38, min(W * 0.5, H * 0.3) / 155, 'happy', t);
   drawSpeech(W / 2 + 110 * s, H * 0.28, '準備好一起探索水域安全了嗎？', fz(18));
@@ -1464,12 +1446,10 @@ function drawHelp(t) {
   noStroke(); fill(CONFIG.colors.panel); rect(px, py, pw, ph, 18);
   const lines = [
     '● 你是勇敢的潛水員，每答完一題就往深海前進，上方的深度計會顯示進度。',
-    '● 本關卡精選 5 大題型：單選、是非、找危險、點選排序、聽音辨識，總分 100 分。',
+    '● 本關卡精選 6 大題型：單選、是非、找危險、點選排序、聽音辨識、水溫深度預測，總分 100 分。',
     '● 答錯會用掉 1 瓶氧氣；5 瓶氧氣用完，探險就結束。',
-    '● 五題全對獲得滿分 100 分時，將會自動解鎖神秘的海底寶箱！',
-    '● 每場有 2 次「提示」，卡住時可以按提示求助海豚教練。',
-    '● 題目會自動朗讀，按「朗讀」可以重聽；右上角可切換靜音。',
-    '● 答錯會告訴你「為什麼」，一定要看解析喔！'
+    '● 六題全對獲得滿分時，將會自動解鎖神秘的海底寶箱！',
+    '● 每場有 2 次「提示」，卡住時可以按提示求助海豚教練。'
   ].join('\n');
   drawFitted(lines, px + m, py + m, pw - 2 * m, ph - 2 * m, fz(CONFIG.fonts.body), 13, LEFT, CONFIG.colors.text);
   const bw = min(W - 2 * m, 360 * s + 60);
@@ -1524,7 +1504,7 @@ function drawHUD(t) {
   fill(255); textStyle(BOLD); textSize(fz(CONFIG.fonts.small));
   text('深度 ' + round(ratio * CONFIG.maxDepth) + ' 公尺（' + min(G.idx + 1, G.pool.length) + '/' + G.pool.length + '）', gx + gw / 2, gy + gh / 2 + 1);
   fill(CONFIG.colors.accent); textAlign(RIGHT, CENTER); textSize(fz(CONFIG.fonts.hud));
-  text('分數 ' + G.score + ' / 100', W - m, gy + gh / 2);
+  text('分數 ' + round(G.score) + ' / 100', W - m, gy + gh / 2);
   if (G.timerOn) {
     const p = constrain(G.timeLeft / G.timeTotal, 0, 1);
     const col = mixCol(CONFIG.colors.bad, CONFIG.colors.good, p);
@@ -1552,6 +1532,7 @@ function contentLayout(q, qBottom) {
   const m = UI.m;
   const area = { x: m, y: qBottom + m * 0.6, w: UI.W - 2 * m, h: UI.H - UI.stripH - (qBottom + m * 0.6) - m * 0.6 };
   if (q.type === 'hazard') return { scene: area, ans: null };
+  if (q.type === 'slider') return { scene: area, ans: null };
   if (area.w > area.h * 1.2) {
     const sw = area.w * 0.44;
     return {
@@ -1574,6 +1555,48 @@ function drawQuestionBody(q, L, t) {
   } else if (q.type === 'tf') drawTFBody(q, L);
   else if (q.type === 'order') drawOrderBody(q, L);
   else if (q.type === 'hazard') drawHazardOverlay(q, L.scene, t);
+  else if (q.type === 'slider') drawSliderInteractiveBody(q, L.scene, t);
+}
+
+function drawSliderInteractiveBody(q, r, t) {
+  const sx = r.x + r.w * 0.1, sy = r.y + r.h * 0.78, sw = r.w * 0.8, sh = 28;
+
+  if (mouseIsPressed && mouseY >= sy - 20 && mouseY <= sy + sh + 20 && mouseX >= sx && mouseX <= sx + sw) {
+    sliderVal = constrain((mouseX - sx) / sw, 0, 1);
+    sliderDragging = true;
+    
+    if (millis() - lastSliderToneTime > 120) {
+      lastSliderToneTime = millis();
+      playSfx('sliderMove', 200 + sliderVal * 400);
+    }
+  } else {
+    sliderDragging = false;
+  }
+
+  push();
+  noStroke(); fill(20, 50, 80, 200); rect(sx - 10, sy - 15, sw + 20, sh + 30, 16);
+  fill(40, 80, 120); rect(sx, sy, sw, sh, sh / 2);
+  
+  const safeX1 = sx + q.targetSliderMin * sw;
+  const safeX2 = sx + q.targetSliderMax * sw;
+  fill(80, 230, 150, 70); rect(safeX1, sy, safeX2 - safeX1, sh);
+
+  const handleX = sx + sliderVal * sw;
+  fill(CONFIG.colors.accent); stroke(255); strokeWeight(3);
+  circle(handleX, sy + sh / 2, sh * 1.3);
+
+  noStroke(); fill(255); textFont(CONFIG.font); textStyle(BOLD); textSize(fz(16));
+  textAlign(CENTER, TOP);
+  text('◀ 拖曳滑桿尋找安全水溫與水深區間 ▶', sx + sw / 2, sy + sh + 8);
+  pop();
+
+  if (G.phase === 'ask') {
+    const bw = min(r.w * 0.45, 220), bh = 46, bx = r.x + (r.w - bw) / 2, by = r.y + r.h - bh - 8;
+    addButton('確認安全區間', bx, by, bw, bh, function () {
+      const ok = (sliderVal >= q.targetSliderMin && sliderVal <= q.targetSliderMax);
+      resolveAnswer(ok, '');
+    }, { size: 22, fill: [30, 140, 90], hoverFill: [50, 190, 120] });
+  }
 }
 
 function drawCoachStrip(t) {
@@ -1605,7 +1628,7 @@ function drawFeedback(q, L, t) {
   const ok = G.lastCorrect;
   noStroke(); fill(0, 0, 0, 100); rect(0, UI.hudH, W, H - UI.hudH - UI.stripH);
   const availH = H - UI.hudH - UI.stripH - 2 * m;
-  const maxPanel = availH * (q.type === 'hazard' ? 0.5 : 0.88);
+  const maxPanel = availH * (q.type === 'hazard' || q.type === 'slider' ? 0.5 : 0.88);
   const pad = m, pw = W - 2 * m, headS = fz(38), btnH = max(46, 56 * UI.s);
   let body = '';
   if (!ok) body += '正確答案：' + answerText(q) + '\n';
@@ -1618,7 +1641,7 @@ function drawFeedback(q, L, t) {
   fill(8, 30, 54, 242); stroke(ok ? CONFIG.colors.good : CONFIG.colors.bad); strokeWeight(4); rect(px, py, pw, ph, 18);
   noStroke(); textAlign(LEFT, CENTER); textSize(headS);
   fill(ok ? CONFIG.colors.good : CONFIG.colors.bad);
-  const head = ok ? '答對了！ +' + G.gain + ' 分' : (G.reason === 'timeout' ? '時間到了！' : (G.reason === 'miss' ? '點錯太多次了！' : '再想一想～'));
+  const head = ok ? '答對了！ +' + round(G.gain) + ' 分' : (G.reason === 'timeout' ? '時間到了！' : (G.reason === 'miss' ? '點錯太多次了！' : '再想一想～'));
   text(head, px + pad, py + pad + headS * 0.65);
   textSize(fit.size); textAlign(LEFT, TOP); fill(CONFIG.colors.text);
   for (let i = 0; i < fit.lines.length; i++) text(fit.lines[i], px + pad, py + pad * 2 + headS * 1.3 + i * fit.lh);
@@ -1649,7 +1672,7 @@ function drawResult(t) {
   if (W > H * 1.1) drawDolphin(W * 0.84, H * 0.17, min(W * 0.14, H * 0.2) / 155, R.stars >= 2 ? 'cheer' : 'sad', t);
   fill(CONFIG.colors.text); textSize(fz(34)); text('稱號：' + R.title, W / 2, H * 0.255);
   fill(255); textSize(fz(CONFIG.fonts.hud));
-  text('總得分 ' + G.score + ' / 100 答對 ' + G.correctCount + ' / ' + G.pool.length + ' 題', W / 2, H * 0.31);
+  text('總得分 ' + round(G.score) + ' / 100 答對 ' + G.correctCount + ' / ' + G.pool.length + ' 題', W / 2, H * 0.31);
 
   const bh = max(48, 58 * s), gap = m * 0.6, by = H - bh - m;
   const retryN = R.retryList.length;
@@ -1662,7 +1685,7 @@ function drawResult(t) {
   const ry = H * 0.35, rh = by - m * 0.8 - ry;
   noStroke(); fill(CONFIG.colors.panel); rect(m, ry, W - 2 * m, rh, 16);
   if (G.wrong.length === 0) {
-    drawFitted('五題全對取得 100 分滿分！你真是優秀的水域安全小達人！', m * 2, ry, W - 4 * m, rh, fz(32), 14, CENTER, CONFIG.colors.good);
+    drawFitted('六題全對取得 100 分滿分！你真是優秀的水域安全小達人！', m * 2, ry, W - 4 * m, rh, fz(32), 14, CENTER, CONFIG.colors.good);
     return;
   }
   const navH = max(40, 44 * s);
@@ -1686,14 +1709,12 @@ function drawResult(t) {
   text('錯題回顧 ' + (resultPage + 1) + ' / ' + pages, W / 2, ny + navH / 2);
 }
 
-// ====================================================================
-// 八、題型區
-// ====================================================================
 function answerText(q) {
   if (q.type === 'single' || q.type === 'sound') return q.options[q.answer];
   if (q.type === 'tf') return q.answer ? '正確（O）' : '錯誤（X）';
   if (q.type === 'order') return q.options.map(function (o) { return o.split('：')[0]; }).join(' → ');
   if (q.type === 'hazard') return q.items.filter(function (i) { return i.danger; }).map(function (i) { return i.label; }).join('；');
+  if (q.type === 'slider') return '將滑桿調整至 30% ~ 40% 的安全區間';
   return '';
 }
 
@@ -1867,9 +1888,6 @@ function hazardClick(px, py, r) {
   if (G.misses >= CONFIG.hazardMaxMiss) resolveAnswer(false, 'miss');
 }
 
-// ====================================================================
-// 遊戲流程
-// ====================================================================
 function startGame(list) {
   const base = (list && list.length) ? list.slice() : QUESTIONS.slice();
   G = {
@@ -1881,7 +1899,7 @@ function startGame(list) {
   gameState = 'PLAY';
   bgDepth = 0;
   resultPage = 0;
-  treasureChestOpened = false;
+  sliderVal = 0.5;
   chest = null; chestFx.confetti = []; chestFx.loot = [];
   startQuestion();
 }
@@ -1923,10 +1941,10 @@ function resolveAnswer(correct, reason) {
   const cx = UI.W / 2, cy = UI.H * 0.45;
   if (correct) {
     G.combo++; G.maxCombo = max(G.maxCombo, G.combo); G.correctCount++;
-    let pts = CONFIG.pointsCorrect;
+    let pts = 100 / G.pool.length;
     G.score += pts; G.gain = pts;
     spawnBurst(cx, cy, true);
-    spawnFloatText(cx, cy - 40, '+' + pts + ' 分', CONFIG.colors.accent);
+    spawnFloatText(cx, cy - 40, '+' + round(pts) + ' 分', CONFIG.colors.accent);
     playSfx('correct');
     const combo = G.combo >= 3;
     setCoach(combo ? pick(CONFIG.coach.combo) : pick(CONFIG.coach.correct), combo ? 'cheer' : 'happy', 99999);
@@ -1948,6 +1966,7 @@ function goNext() {
 
 function finishGame() {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
+  G.score = constrain(G.score, 0, 100);
   const acc = G.correctCount / G.pool.length;
   const stars = acc >= CONFIG.starRules.three ? 3 : (acc >= CONFIG.starRules.two ? 2 : 1);
   const title = G.lives <= 0 ? CONFIG.titles.fail : CONFIG.titles[stars];
@@ -1958,10 +1977,10 @@ function finishGame() {
   resultPage = 0;
   setCoach('', 'idle', 0);
   if (isPerfect()) {
-    startChestShow(1.3);                 // 滿分：自動觸發寶箱（音效與語音由寶箱流程負責）
+    startChestShow(1.3);
   } else {
     playSfx(G.lives <= 0 ? 'gameover' : 'fanfare');
-    speak('挑戰結束，你得到' + stars + '顆星，得分' + G.score + '分，稱號是' + title + '。');
+    speak('挑戰結束，你得到' + stars + '顆星，得分' + round(G.score) + '分，稱號是' + title + '。');
   }
 }
 
@@ -1983,9 +2002,6 @@ function useHint() {
   speak(q.hint);
 }
 
-// ====================================================================
-// 九、事件處理
-// ====================================================================
 function setup() {
   createCanvas(windowWidth, windowHeight);
   document.body.style.margin = '0';
@@ -2047,11 +2063,5 @@ function keyPressed() {
     else if (gameState === 'PLAY' && G.phase === 'feedback') goNext();
     else if (gameState === 'RESULT' && chestCanDismiss()) dismissChest();
     return false;
-  }
-  if (gameState === 'PLAY' && G.phase === 'ask') {
-    const n = parseInt(key, 10);
-    if ((G.q.type === 'single' || G.q.type === 'sound') && n >= 1 && n <= G.optOrder.length && G.hidden.indexOf(n - 1) < 0) answerChoice(n - 1);
-    else if (G.q.type === 'tf' && (key === 'o' || key === 'O')) answerTF(true);
-    else if (G.q.type === 'tf' && (key === 'x' || key === 'X')) answerTF(false);
   }
 }
